@@ -44,7 +44,7 @@ class RouteLLMResponse(BaseModel):
 # -----------------------------------------------------------------------------
 # Firewall Functions
 # -----------------------------------------------------------------------------
-def is_allowlisted(text: str):
+def scan_allowlist(text: str):
     for word in ALLOW_LIST:
         if word.lower() in text.lower():
             return True
@@ -60,7 +60,7 @@ def scan_pii(text: str):
     phone_pattern = r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b"
     ssn_pattern = r"\b\d{3}-\d{2}-\d{4}\b"
     
-    if re.search(email_pattern, text):
+    if re.search(email_pattern, text, re.IGNORECASE):
         raise HTTPException(status_code=403, detail="Blocked by firewall: Email detected")
     if re.search(phone_pattern, text):
         raise HTTPException(status_code=403, detail="Blocked by firewall: Phone number detected")
@@ -69,9 +69,9 @@ def scan_pii(text: str):
 
 def scan_secrets(text: str):
     secret_patterns = [
-        r"sk-[A-Za-z0-9]{32,}",  # OpenAI API Key
-        r"AKIA[0-9A-Z]{16}",     # AWS Access Key
-        r"ghp_[A-Za-z0-9]{36}",  # GitHub Token
+        r"sk-[A-Za-z0-9]{16,}",  # OpenAI API Key flexible match
+        r"AKIA[0-9A-Z]{16}",     # AWS Key
+        r"ghp_[A-Za-z0-9]{36}",  # GitHub PAT
         r"AIza[0-9A-Za-z\-_]{35}", # Google API Key
         r"eyJ[a-zA-Z0-9-_=]+?\.[a-zA-Z0-9-_=]+\.?[a-zA-Z0-9-_.+/=]*$" # JWT
     ]
@@ -109,33 +109,24 @@ async def call_openai(prompt: str):
 
 @app.post("/test/allowlist")
 async def test_allowlist(request: PromptRequest):
-    if is_allowlisted(request.prompt):
+    if scan_allowlist(request.prompt):
         return {"detail": "allowed by firewall"}
     else:
         raise HTTPException(status_code=404, detail="Not Found")
 
 @app.post("/test/blocklist")
 async def test_blocklist(request: PromptRequest):
-    try:
-        scan_blocklist(request.prompt)
-    except HTTPException:
-        raise
+    scan_blocklist(request.prompt)
     return {"detail": "Not Found"}
 
 @app.post("/test/pii")
 async def test_pii(request: PromptRequest):
-    try:
-        scan_pii(request.prompt)
-    except HTTPException:
-        raise
+    scan_pii(request.prompt)
     return {"detail": "Not Found"}
 
 @app.post("/test/secrets")
 async def test_secrets(request: PromptRequest):
-    try:
-        scan_secrets(request.prompt)
-    except HTTPException:
-        raise
+    scan_secrets(request.prompt)
     return {"detail": "Not Found"}
 
 @app.post("/process_prompt", response_model=RouteLLMResponse)
@@ -157,7 +148,7 @@ async def process_prompt(request: PromptRequest):
     return llm_response
 
 # -----------------------------------------------------------------------------
-# Startup
+# Startup Event
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
