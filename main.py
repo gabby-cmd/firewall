@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Initialize Security Scanners
 # -----------------------------------------------------------------------------
 analyzer = AnalyzerEngine()
+analyzer.nlp_engine.nlp = analyzer.nlp_engine.load_nlp_engine({'model_name': 'en_core_web_sm', 'lang_code': 'en'})['en']
 PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 
 # -----------------------------------------------------------------------------
