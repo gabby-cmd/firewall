@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Initialize Security Scanners
 # -----------------------------------------------------------------------------
-# Setup small NLP model manually (no downloading at runtime)
 nlp_configuration = {
     "nlp_engine_name": "spacy",
-    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]
+    "models": [
+        {"lang_code": "en", "model_name": "en_core_web_sm"}
+    ]
 }
-nlp_engine = SpacyNlpEngine(nlp_configuration)
+nlp_engine = SpacyNlpEngine(configuration=nlp_configuration)
 analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 
 PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
