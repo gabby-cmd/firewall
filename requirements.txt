@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+openai
+python-dotenv
+presidio-analyzer
+perspective-api-client
+detect-secrets
