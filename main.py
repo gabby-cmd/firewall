@@ -8,6 +8,7 @@ import logging
 
 import httpx
 from presidio_analyzer import AnalyzerEngine
+from presidio_analyzer.nlp_engine import SpacyNlpEngine
 from detect_secrets import SecretsCollection
 
 from firewall_lists import BLOCK_LIST, ALLOW_LIST
@@ -34,11 +35,14 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Initialize Security Scanners
 # -----------------------------------------------------------------------------
-analyzer = AnalyzerEngine()
-analyzer.nlp_engine.nlp = analyzer.nlp_engine.load_nlp_engine({
+# Setup small NLP model manually (no downloading at runtime)
+nlp_configuration = {
     "nlp_engine_name": "spacy",
     "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]
-})["en"]
+}
+nlp_engine = SpacyNlpEngine(nlp_configuration)
+analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
+
 PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 
 # -----------------------------------------------------------------------------
@@ -154,4 +158,4 @@ async def process_prompt(request: PromptRequest):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("✅ FastAPI Chatbot Server with Full Firewall (Blocklist, Allowlist, PII, Secrets, Toxicity) is running!")
+    logger.info("✅ FastAPI Chatbot Server with Full Firewall is running!")
