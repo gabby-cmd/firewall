@@ -8,7 +8,6 @@ import logging
 
 import httpx
 import re
-from detect_secrets import SecretsCollection
 
 from firewall_lists import BLOCK_LIST, ALLOW_LIST
 
@@ -29,7 +28,7 @@ openai.api_key = OPENAI_API_KEY
 # Setup logging
 # -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
 # -----------------------------------------------------------------------------
 # Initialize Security Scanners
@@ -71,9 +70,10 @@ def scan_for_allowlist(text: str):
 def scan_for_pii(text: str):
     patterns = {
         "Email": r"[\w\.-]+@[\w\.-]+\.\w+",
-        "Phone Number": r"\+?\d[\d\s\-\(\)]{7,}\d",
+        "Phone Number": r"(\+?\d{1,2}\s?)?(\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}",
         "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
-        "Credit Card": r"\b(?:\d[ -]*?){13,16}\b"
+        "Credit Card": r"\b(?:\d[ -]*?){13,16}\b",
+        "Name": r"\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b"  # Firstname Lastname pattern
     }
 
     for pii_type, pattern in patterns.items():
@@ -81,10 +81,17 @@ def scan_for_pii(text: str):
             raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected.")
 
 def scan_for_secrets(text: str):
-    secrets = SecretsCollection()
-    secrets.scan_text(text)
-    if secrets.data:
-        raise HTTPException(status_code=403, detail="Blocked: Potential secrets detected.")
+    secret_patterns = [
+        r"sk-[A-Za-z0-9]{20,40}",    # OpenAI API Keys
+        r"AKIA[0-9A-Z]{16}",          # AWS Access Keys
+        r"AIza[0-9A-Za-z\-_]{35}",    # Google API keys
+        r"ghp_[A-Za-z0-9]{36}",       # GitHub tokens
+        r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]*"  # JWT tokens
+    ]
+
+    for pattern in secret_patterns:
+        if re.search(pattern, text):
+            raise HTTPException(status_code=403, detail="Blocked: Potential secret detected.")
 
 def scan_for_toxicity(text: str):
     headers = {"Content-Type": "application/json"}
@@ -107,13 +114,15 @@ def scan_for_toxicity(text: str):
         raise HTTPException(status_code=403, detail="Blocked: Toxic content detected.")
 
 def scan_input(prompt: str):
+    # ✅ Check allowlist FIRST
+    if not scan_for_allowlist(prompt):
+        raise HTTPException(status_code=403, detail="Blocked by firewall: prompt not allowed (finance-related keywords missing).")
+
+    # ✅ Then run blocklist/PII/Secrets/Toxicity
     scan_for_blocklist(prompt)
     scan_for_pii(prompt)
     scan_for_secrets(prompt)
     scan_for_toxicity(prompt)
-
-    if not scan_for_allowlist(prompt):
-        raise HTTPException(status_code=403, detail="Blocked by firewall: prompt not allowed.")
 
 # -----------------------------------------------------------------------------
 # OpenAI Call
@@ -156,4 +165,4 @@ async def process_prompt(request: PromptRequest):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("✅ FastAPI Chatbot Server with Lightweight Regex Firewall is running!")
+    logger.info(" FastAPI Chatbot Server is running!")
