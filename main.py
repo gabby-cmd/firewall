@@ -7,8 +7,7 @@ import time
 import logging
 
 import httpx
-from presidio_analyzer import AnalyzerEngine
-from presidio_analyzer.nlp_engine import SpacyNlpEngine
+import re
 from detect_secrets import SecretsCollection
 
 from firewall_lists import BLOCK_LIST, ALLOW_LIST
@@ -35,18 +34,6 @@ logger = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 # Initialize Security Scanners
 # -----------------------------------------------------------------------------
-nlp_configuration = {
-    "nlp_engine_name": "spacy",
-    "models": [
-        {"lang_code": "en", "model_name": "en_core_web_sm"}
-    ]
-}
-
-nlp_engine = SpacyNlpEngine()
-nlp_engine.load(nlp_configuration)
-
-analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
-
 PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 
 # -----------------------------------------------------------------------------
@@ -82,9 +69,16 @@ def scan_for_allowlist(text: str):
     return False
 
 def scan_for_pii(text: str):
-    results = analyzer.analyze(text=text, language='en')
-    if results:
-        raise HTTPException(status_code=403, detail=f"Blocked: PII detected ({[e.entity_type for e in results]})")
+    patterns = {
+        "Email": r"[\w\.-]+@[\w\.-]+\.\w+",
+        "Phone Number": r"\+?\d[\d\s\-\(\)]{7,}\d",
+        "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
+        "Credit Card": r"\b(?:\d[ -]*?){13,16}\b"
+    }
+
+    for pii_type, pattern in patterns.items():
+        if re.search(pattern, text):
+            raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected.")
 
 def scan_for_secrets(text: str):
     secrets = SecretsCollection()
@@ -162,4 +156,4 @@ async def process_prompt(request: PromptRequest):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("✅ FastAPI Chatbot Server with Full Firewall is running!")
+    logger.info("✅ FastAPI Chatbot Server with Lightweight Regex Firewall is running!")
