@@ -3,11 +3,10 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import openai
 import os
+import re
 import time
 import logging
-import re
-
-from firewall_lists import BLOCK_LIST, ALLOW_LIST
+from openai import AsyncOpenAI
 
 # -----------------------------------------------------------------------------
 # Load environment variables
@@ -15,10 +14,6 @@ from firewall_lists import BLOCK_LIST, ALLOW_LIST
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not OPENAI_API_KEY:
-    raise EnvironmentError("OPENAI_API_KEY environment variable is not set.")
-
 openai.api_key = OPENAI_API_KEY
 
 # -----------------------------------------------------------------------------
@@ -46,66 +41,77 @@ class RouteLLMResponse(BaseModel):
     output_tokens: int
 
 # -----------------------------------------------------------------------------
+# Allowlist, Blocklist
+# -----------------------------------------------------------------------------
+ALLOW_LIST = [
+    "stocks", "mutual funds", "investments", "equity", "debt", "finance", "economy", 
+    "GDP", "wealth management", "savings", "401k", "retirement", "capital gains",
+    "dividends", "index funds", "bonds", "commodities", "hedge fund", "venture capital",
+    "angel investment", "portfolio", "fund manager", "pension", "real estate", 
+    "stock exchange", "bull market", "bear market", "asset allocation", "inflation",
+    "interest rates", "banking", "credit score", "financial planning", "net worth",
+    "insurance", "annuities", "currency market", "crypto", "blockchain", "bitcoin",
+    "private equity", "public offering", "treasury bonds", "forex", "financial literacy",
+    "estate planning", "trust funds", "gold investment", "financial advisor", "market crash"
+]
+
+BLOCK_LIST = [
+    "hack", "bomb", "attack", "terrorist", "kill", "weapon", "shoot", "kidnap", 
+    "explosive", "drugs", "smuggle", "crime", "fraud", "assassinate", "poison",
+    "blackmail", "hijack", "hostage", "murder", "cyberattack", "harassment",
+    "money laundering", "bribe", "ransom", "extort", "illegal", "nuclear", 
+    "bioweapon", "chemical weapon", "suicide", "genocide", "riot", "sedition",
+    "treason", "arson", "anarchy", "sabotage", "espionage", "violence", "abduction",
+    "counterfeit", "corruption", "smuggling", "prostitution", "drug trafficking",
+    "child abuse", "hate crime", "gang violence", "pornography", "rape"
+]
+
+# -----------------------------------------------------------------------------
 # Firewall Functions
 # -----------------------------------------------------------------------------
-def check_allowlist(text: str):
+def scan_for_allowlist(text: str):
     for word in ALLOW_LIST:
         if word.lower() in text.lower():
             return True
     return False
 
-def check_blocklist(text: str):
+def scan_for_blocklist(text: str):
     for word in BLOCK_LIST:
         if word.lower() in text.lower():
-            return True
-    return False
+            raise HTTPException(status_code=403, detail=f"Blocked by firewall: banned word detected")
 
-def check_pii(text: str):
-    patterns = {
-        "Email": r"[\w\.-]+@[\w\.-]+\.\w+",
-        "Phone Number": r"(\+?\d{1,2}\s?)?(\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}",
-        "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
-        "Credit Card": r"\b(?:\d[ -]*?){13,16}\b",
-        "Name": r"\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b"
-    }
-    for pii_type, pattern in patterns.items():
-        if re.search(pattern, text):
-            return pii_type
-    return None
+def scan_for_pii(text: str):
+    email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+    phone_pattern = r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b"
+    ssn_pattern = r"\b\d{3}-\d{2}-\d{4}\b"
+    
+    if re.search(email_pattern, text):
+        raise HTTPException(status_code=403, detail="Blocked by firewall: Email detected")
+    if re.search(phone_pattern, text):
+        raise HTTPException(status_code=403, detail="Blocked by firewall: Phone number detected")
+    if re.search(ssn_pattern, text):
+        raise HTTPException(status_code=403, detail="Blocked by firewall: SSN detected")
 
-def check_secrets(text: str):
+def scan_for_secrets(text: str):
     secret_patterns = [
-        r"sk-[A-Za-z0-9]{20,40}",
-        r"AKIA[0-9A-Z]{16}",
-        r"AIza[0-9A-Za-z\-_]{35}",
-        r"ghp_[A-Za-z0-9]{36}",
-        r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]*"
+        r"sk-[A-Za-z0-9]{32,}",  # OpenAI API Key
+        r"AKIA[0-9A-Z]{16}",     # AWS Key
+        r"ghp_[A-Za-z0-9]{36}",  # GitHub Token
+        r"AIza[0-9A-Za-z\-_]{35}", # Google API Key
+        r"eyJ[a-zA-Z0-9-_=]+?\.[a-zA-Z0-9-_=]+\.?[a-zA-Z0-9-_.+/=]*$" # JWT
     ]
     for pattern in secret_patterns:
         if re.search(pattern, text):
-            return True
-    return False
-
-def full_scan(prompt: str):
-    if not check_allowlist(prompt):
-        raise HTTPException(status_code=403, detail="Blocked by firewall: prompt not allowed (finance-related keywords missing).")
-
-    if check_blocklist(prompt):
-        raise HTTPException(status_code=403, detail="Blocked: banned word detected.")
-
-    pii_type = check_pii(prompt)
-    if pii_type:
-        raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected.")
-
-    if check_secrets(prompt):
-        raise HTTPException(status_code=403, detail="Blocked: potential secret detected.")
+            raise HTTPException(status_code=403, detail="Blocked by firewall: Secret detected")
 
 # -----------------------------------------------------------------------------
-# OpenAI Call
+# OpenAI Async Client
 # -----------------------------------------------------------------------------
-def call_openai(prompt: str):
+client = AsyncOpenAI()
+
+async def call_openai(prompt: str):
     start_time = time.time()
-    response = openai.ChatCompletion.create(
+    response = await client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}]
     )
@@ -123,50 +129,63 @@ def call_openai(prompt: str):
     )
 
 # -----------------------------------------------------------------------------
-# Testing Endpoints for Each Firewall Check
+# API Endpoints
 # -----------------------------------------------------------------------------
+
+# Individual firewall checkers
 @app.post("/test/allowlist")
 async def test_allowlist(request: PromptRequest):
-    if not check_allowlist(request.prompt):
-        raise HTTPException(status_code=403, detail="Blocked: not in allowlist")
-    return {"message": "✅ Allowed based on allowlist"}
+    if scan_for_allowlist(request.prompt):
+        return {"detail": "allowed by firewall"}
+    else:
+        raise HTTPException(status_code=404, detail="Not Found")
 
 @app.post("/test/blocklist")
 async def test_blocklist(request: PromptRequest):
-    if check_blocklist(request.prompt):
-        raise HTTPException(status_code=403, detail="Blocked: banned word detected")
-    return {"message": "✅ No banned words found"}
+    try:
+        scan_for_blocklist(request.prompt)
+    except HTTPException:
+        raise
+    return {"detail": "Not Found"}
 
 @app.post("/test/pii")
 async def test_pii(request: PromptRequest):
-    pii_type = check_pii(request.prompt)
-    if pii_type:
-        raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected")
-    return {"message": "✅ No PII found"}
+    try:
+        scan_for_pii(request.prompt)
+    except HTTPException:
+        raise
+    return {"detail": "Not Found"}
 
 @app.post("/test/secrets")
 async def test_secrets(request: PromptRequest):
-    if check_secrets(request.prompt):
-        raise HTTPException(status_code=403, detail="Blocked: secret detected")
-    return {"message": "✅ No secrets found"}
+    try:
+        scan_for_secrets(request.prompt)
+    except HTTPException:
+        raise
+    return {"detail": "Not Found"}
 
-# -----------------------------------------------------------------------------
-# Final Combined Firewall + OpenAI Endpoint
-# -----------------------------------------------------------------------------
+# Main chatbot
 @app.post("/process_prompt", response_model=RouteLLMResponse)
 async def process_prompt(request: PromptRequest):
     logger.info(f"Received prompt: {request.prompt[:50]}...")
 
-    full_scan(request.prompt)
+    # Firewall full scan but do not block unless critical
+    try:
+        scan_for_blocklist(request.prompt)
+        scan_for_pii(request.prompt)
+        scan_for_secrets(request.prompt)
+    except HTTPException as e:
+        logger.warning(f"Firewall blocked prompt: {e.detail}")
+        raise
 
-    llm_response = call_openai(request.prompt)
-
+    llm_response = await call_openai(request.prompt)
     logger.info(f"Response returned in {llm_response.latency:.2f} seconds.")
     return llm_response
 
 # -----------------------------------------------------------------------------
-# Startup Event
+# Startup
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("✅ FastAPI Chatbot Server with Modular Firewall is running!")
+    logger.info("✅ FastAPI Firewall Chatbot Server is running!")
+
