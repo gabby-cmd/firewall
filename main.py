@@ -7,6 +7,7 @@ import re
 import time
 import logging
 from openai import AsyncOpenAI
+from firewall_lists import ALLOW_LIST, BLOCK_LIST
 
 # -----------------------------------------------------------------------------
 # Load environment variables
@@ -41,46 +42,20 @@ class RouteLLMResponse(BaseModel):
     output_tokens: int
 
 # -----------------------------------------------------------------------------
-# Allowlist, Blocklist
-# -----------------------------------------------------------------------------
-ALLOW_LIST = [
-    "stocks", "mutual funds", "investments", "equity", "debt", "finance", "economy", 
-    "GDP", "wealth management", "savings", "401k", "retirement", "capital gains",
-    "dividends", "index funds", "bonds", "commodities", "hedge fund", "venture capital",
-    "angel investment", "portfolio", "fund manager", "pension", "real estate", 
-    "stock exchange", "bull market", "bear market", "asset allocation", "inflation",
-    "interest rates", "banking", "credit score", "financial planning", "net worth",
-    "insurance", "annuities", "currency market", "crypto", "blockchain", "bitcoin",
-    "private equity", "public offering", "treasury bonds", "forex", "financial literacy",
-    "estate planning", "trust funds", "gold investment", "financial advisor", "market crash"
-]
-
-BLOCK_LIST = [
-    "hack", "bomb", "attack", "terrorist", "kill", "weapon", "shoot", "kidnap", 
-    "explosive", "drugs", "smuggle", "crime", "fraud", "assassinate", "poison",
-    "blackmail", "hijack", "hostage", "murder", "cyberattack", "harassment",
-    "money laundering", "bribe", "ransom", "extort", "illegal", "nuclear", 
-    "bioweapon", "chemical weapon", "suicide", "genocide", "riot", "sedition",
-    "treason", "arson", "anarchy", "sabotage", "espionage", "violence", "abduction",
-    "counterfeit", "corruption", "smuggling", "prostitution", "drug trafficking",
-    "child abuse", "hate crime", "gang violence", "pornography", "rape"
-]
-
-# -----------------------------------------------------------------------------
 # Firewall Functions
 # -----------------------------------------------------------------------------
-def scan_for_allowlist(text: str):
+def is_allowlisted(text: str):
     for word in ALLOW_LIST:
         if word.lower() in text.lower():
             return True
     return False
 
-def scan_for_blocklist(text: str):
+def scan_blocklist(text: str):
     for word in BLOCK_LIST:
         if word.lower() in text.lower():
-            raise HTTPException(status_code=403, detail=f"Blocked by firewall: banned word detected")
+            raise HTTPException(status_code=403, detail="Blocked by firewall: banned word detected")
 
-def scan_for_pii(text: str):
+def scan_pii(text: str):
     email_pattern = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
     phone_pattern = r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b"
     ssn_pattern = r"\b\d{3}-\d{2}-\d{4}\b"
@@ -92,10 +67,10 @@ def scan_for_pii(text: str):
     if re.search(ssn_pattern, text):
         raise HTTPException(status_code=403, detail="Blocked by firewall: SSN detected")
 
-def scan_for_secrets(text: str):
+def scan_secrets(text: str):
     secret_patterns = [
         r"sk-[A-Za-z0-9]{32,}",  # OpenAI API Key
-        r"AKIA[0-9A-Z]{16}",     # AWS Key
+        r"AKIA[0-9A-Z]{16}",     # AWS Access Key
         r"ghp_[A-Za-z0-9]{36}",  # GitHub Token
         r"AIza[0-9A-Za-z\-_]{35}", # Google API Key
         r"eyJ[a-zA-Z0-9-_=]+?\.[a-zA-Z0-9-_=]+\.?[a-zA-Z0-9-_.+/=]*$" # JWT
@@ -132,10 +107,9 @@ async def call_openai(prompt: str):
 # API Endpoints
 # -----------------------------------------------------------------------------
 
-# Individual firewall checkers
 @app.post("/test/allowlist")
 async def test_allowlist(request: PromptRequest):
-    if scan_for_allowlist(request.prompt):
+    if is_allowlisted(request.prompt):
         return {"detail": "allowed by firewall"}
     else:
         raise HTTPException(status_code=404, detail="Not Found")
@@ -143,7 +117,7 @@ async def test_allowlist(request: PromptRequest):
 @app.post("/test/blocklist")
 async def test_blocklist(request: PromptRequest):
     try:
-        scan_for_blocklist(request.prompt)
+        scan_blocklist(request.prompt)
     except HTTPException:
         raise
     return {"detail": "Not Found"}
@@ -151,7 +125,7 @@ async def test_blocklist(request: PromptRequest):
 @app.post("/test/pii")
 async def test_pii(request: PromptRequest):
     try:
-        scan_for_pii(request.prompt)
+        scan_pii(request.prompt)
     except HTTPException:
         raise
     return {"detail": "Not Found"}
@@ -159,25 +133,25 @@ async def test_pii(request: PromptRequest):
 @app.post("/test/secrets")
 async def test_secrets(request: PromptRequest):
     try:
-        scan_for_secrets(request.prompt)
+        scan_secrets(request.prompt)
     except HTTPException:
         raise
     return {"detail": "Not Found"}
 
-# Main chatbot
 @app.post("/process_prompt", response_model=RouteLLMResponse)
 async def process_prompt(request: PromptRequest):
     logger.info(f"Received prompt: {request.prompt[:50]}...")
 
-    # Firewall full scan but do not block unless critical
+    # Firewall full scan
     try:
-        scan_for_blocklist(request.prompt)
-        scan_for_pii(request.prompt)
-        scan_for_secrets(request.prompt)
+        scan_blocklist(request.prompt)
+        scan_pii(request.prompt)
+        scan_secrets(request.prompt)
     except HTTPException as e:
         logger.warning(f"Firewall blocked prompt: {e.detail}")
-        raise
+        raise HTTPException(status_code=403, detail="Blocked by firewall. Cannot proceed.")
 
+    # Only if all scans pass → call OpenAI
     llm_response = await call_openai(request.prompt)
     logger.info(f"Response returned in {llm_response.latency:.2f} seconds.")
     return llm_response
