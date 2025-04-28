@@ -6,8 +6,8 @@ import os
 import time
 import logging
 
+import httpx
 from presidio_analyzer import AnalyzerEngine
-from perspective_api_client import PerspectiveAPI
 from detect_secrets import SecretsCollection
 
 from firewall_lists import BLOCK_LIST, ALLOW_LIST
@@ -21,7 +21,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PERSPECTIVE_API_KEY = os.getenv("PERSPECTIVE_API_KEY")
 
 if not OPENAI_API_KEY or not PERSPECTIVE_API_KEY:
-    raise EnvironmentError("Environment variables missing: OPENAI_API_KEY ")
+    raise EnvironmentError("Environment variables missing: OPENAI_API_KEY and/or PERSPECTIVE_API_KEY.")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Initialize Security Scanners
 # -----------------------------------------------------------------------------
 analyzer = AnalyzerEngine()
-perspective = PerspectiveAPI(api_key=PERSPECTIVE_API_KEY)
+PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 
 # -----------------------------------------------------------------------------
 # FastAPI App
@@ -81,8 +81,23 @@ def scan_for_secrets(text: str):
         raise HTTPException(status_code=403, detail="Blocked: Potential secrets detected.")
 
 def scan_for_toxicity(text: str):
-    scores = perspective.score(text=text, attributes=["TOXICITY"])
-    if scores.get("TOXICITY", 0) >= 0.8:
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "comment": {"text": text},
+        "requestedAttributes": {"TOXICITY": {}},
+        "languages": ["en"]
+    }
+    params = {"key": PERSPECTIVE_API_KEY}
+
+    response = httpx.post(PERSPECTIVE_ENDPOINT, headers=headers, json=data, params=params)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail="Perspective API call failed.")
+
+    scores = response.json()
+    toxicity_score = scores["attributeScores"]["TOXICITY"]["summaryScore"]["value"]
+
+    if toxicity_score >= 0.8:
         raise HTTPException(status_code=403, detail="Blocked: Toxic content detected.")
 
 def scan_input(prompt: str):
@@ -135,4 +150,4 @@ async def process_prompt(request: PromptRequest):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info("FastAPI Chatbot Server with Firewall is ready!")
+    logger.info("✅ FastAPI Chatbot Server with Full Firewall (Blocklist, Allowlist, PII, Secrets, Toxicity) is running!")
