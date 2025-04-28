@@ -5,8 +5,6 @@ import openai
 import os
 import time
 import logging
-
-import httpx
 import re
 
 from firewall_lists import BLOCK_LIST, ALLOW_LIST
@@ -17,10 +15,9 @@ from firewall_lists import BLOCK_LIST, ALLOW_LIST
 load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PERSPECTIVE_API_KEY = os.getenv("PERSPECTIVE_API_KEY")
 
-if not OPENAI_API_KEY or not PERSPECTIVE_API_KEY:
-    raise EnvironmentError("Environment variables missing: OPENAI_API_KEY and/or PERSPECTIVE_API_KEY.")
+if not OPENAI_API_KEY:
+    raise EnvironmentError("OPENAI_API_KEY environment variable is not set.")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -29,11 +26,6 @@ openai.api_key = OPENAI_API_KEY
 # -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
-
-# -----------------------------------------------------------------------------
-# Initialize Security Scanners
-# -----------------------------------------------------------------------------
-PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 
 # -----------------------------------------------------------------------------
 # FastAPI App
@@ -56,73 +48,57 @@ class RouteLLMResponse(BaseModel):
 # -----------------------------------------------------------------------------
 # Firewall Functions
 # -----------------------------------------------------------------------------
-def scan_for_blocklist(text: str):
-    for word in BLOCK_LIST:
-        if word.lower() in text.lower():
-            raise HTTPException(status_code=403, detail=f"Banned word detected: {word}")
-
-def scan_for_allowlist(text: str):
+def check_allowlist(text: str):
     for word in ALLOW_LIST:
         if word.lower() in text.lower():
             return True
     return False
 
-def scan_for_pii(text: str):
+def check_blocklist(text: str):
+    for word in BLOCK_LIST:
+        if word.lower() in text.lower():
+            return True
+    return False
+
+def check_pii(text: str):
     patterns = {
         "Email": r"[\w\.-]+@[\w\.-]+\.\w+",
         "Phone Number": r"(\+?\d{1,2}\s?)?(\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}",
         "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
         "Credit Card": r"\b(?:\d[ -]*?){13,16}\b",
-        "Name": r"\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b"  # Firstname Lastname pattern
+        "Name": r"\b([A-Z][a-z]+)\s([A-Z][a-z]+)\b"
     }
-
     for pii_type, pattern in patterns.items():
         if re.search(pattern, text):
-            raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected.")
+            return pii_type
+    return None
 
-def scan_for_secrets(text: str):
+def check_secrets(text: str):
     secret_patterns = [
-        r"sk-[A-Za-z0-9]{20,40}",    # OpenAI API Keys
-        r"AKIA[0-9A-Z]{16}",          # AWS Access Keys
-        r"AIza[0-9A-Za-z\-_]{35}",    # Google API keys
-        r"ghp_[A-Za-z0-9]{36}",       # GitHub tokens
-        r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]*"  # JWT tokens
+        r"sk-[A-Za-z0-9]{20,40}",
+        r"AKIA[0-9A-Z]{16}",
+        r"AIza[0-9A-Za-z\-_]{35}",
+        r"ghp_[A-Za-z0-9]{36}",
+        r"eyJ[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.[A-Za-z0-9-_.+/=]*"
     ]
-
     for pattern in secret_patterns:
         if re.search(pattern, text):
-            raise HTTPException(status_code=403, detail="Blocked: Potential secret detected.")
+            return True
+    return False
 
-def scan_for_toxicity(text: str):
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "comment": {"text": text},
-        "requestedAttributes": {"TOXICITY": {}},
-        "languages": ["en"]
-    }
-    params = {"key": PERSPECTIVE_API_KEY}
-
-    response = httpx.post(PERSPECTIVE_ENDPOINT, headers=headers, json=data, params=params)
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail="Perspective API call failed.")
-
-    scores = response.json()
-    toxicity_score = scores["attributeScores"]["TOXICITY"]["summaryScore"]["value"]
-
-    if toxicity_score >= 0.8:
-        raise HTTPException(status_code=403, detail="Blocked: Toxic content detected.")
-
-def scan_input(prompt: str):
-    # ✅ Check allowlist FIRST
-    if not scan_for_allowlist(prompt):
+def full_scan(prompt: str):
+    if not check_allowlist(prompt):
         raise HTTPException(status_code=403, detail="Blocked by firewall: prompt not allowed (finance-related keywords missing).")
 
-    # ✅ Then run blocklist/PII/Secrets/Toxicity
-    scan_for_blocklist(prompt)
-    scan_for_pii(prompt)
-    scan_for_secrets(prompt)
-    scan_for_toxicity(prompt)
+    if check_blocklist(prompt):
+        raise HTTPException(status_code=403, detail="Blocked: banned word detected.")
+
+    pii_type = check_pii(prompt)
+    if pii_type:
+        raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected.")
+
+    if check_secrets(prompt):
+        raise HTTPException(status_code=403, detail="Blocked: potential secret detected.")
 
 # -----------------------------------------------------------------------------
 # OpenAI Call
@@ -147,13 +123,41 @@ def call_openai(prompt: str):
     )
 
 # -----------------------------------------------------------------------------
-# API Endpoints
+# Testing Endpoints for Each Firewall Check
+# -----------------------------------------------------------------------------
+@app.post("/test/allowlist")
+async def test_allowlist(request: PromptRequest):
+    if not check_allowlist(request.prompt):
+        raise HTTPException(status_code=403, detail="Blocked: not in allowlist")
+    return {"message": "✅ Allowed based on allowlist"}
+
+@app.post("/test/blocklist")
+async def test_blocklist(request: PromptRequest):
+    if check_blocklist(request.prompt):
+        raise HTTPException(status_code=403, detail="Blocked: banned word detected")
+    return {"message": "✅ No banned words found"}
+
+@app.post("/test/pii")
+async def test_pii(request: PromptRequest):
+    pii_type = check_pii(request.prompt)
+    if pii_type:
+        raise HTTPException(status_code=403, detail=f"Blocked: {pii_type} detected")
+    return {"message": "✅ No PII found"}
+
+@app.post("/test/secrets")
+async def test_secrets(request: PromptRequest):
+    if check_secrets(request.prompt):
+        raise HTTPException(status_code=403, detail="Blocked: secret detected")
+    return {"message": "✅ No secrets found"}
+
+# -----------------------------------------------------------------------------
+# Final Combined Firewall + OpenAI Endpoint
 # -----------------------------------------------------------------------------
 @app.post("/process_prompt", response_model=RouteLLMResponse)
 async def process_prompt(request: PromptRequest):
     logger.info(f"Received prompt: {request.prompt[:50]}...")
 
-    scan_input(request.prompt)
+    full_scan(request.prompt)
 
     llm_response = call_openai(request.prompt)
 
@@ -165,4 +169,4 @@ async def process_prompt(request: PromptRequest):
 # -----------------------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event():
-    logger.info(" FastAPI Chatbot Server is running!")
+    logger.info("✅ FastAPI Chatbot Server with Modular Firewall is running!")
