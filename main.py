@@ -41,7 +41,10 @@ nlp_configuration = {
         {"lang_code": "en", "model_name": "en_core_web_sm"}
     ]
 }
-nlp_engine = SpacyNlpEngine(configuration=nlp_configuration)
+
+nlp_engine = SpacyNlpEngine()
+nlp_engine.load(nlp_configuration)
+
 analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 
 PERSPECTIVE_ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
