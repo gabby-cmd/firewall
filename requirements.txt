@@ -3,6 +3,5 @@ uvicorn
 openai
 python-dotenv
 presidio-analyzer
-git+https://github.com/conversationai/perspectiveapi-python-client.git
-
 detect-secrets
+httpx
